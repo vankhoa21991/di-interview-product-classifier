@@ -1,1 +1,17 @@
 .idea
+.vscode
+*.csv
+*.json
+*.pkl
+*.pt
+*.txt
+*.jsonl
+*.jsonl.gz
+logs
+results
+results_notebook
+training_logs
+training_logs_notebook
+distilbert*
+credentials.json
+venv
