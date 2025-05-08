@@ -15,3 +15,5 @@ training_logs_notebook
 distilbert*
 credentials.json
 venv
+*.pyc
+*.joblib

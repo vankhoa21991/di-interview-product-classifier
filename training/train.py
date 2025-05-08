@@ -10,6 +10,10 @@ import torch
 from datetime import datetime
 import argparse
 from torch.utils.data import DataLoader
+import joblib
+import json
+from tqdm import tqdm
+from sklearn.metrics import accuracy_score, precision_score, recall_score
 
 def load_data():
     sql = """
@@ -19,6 +23,7 @@ def load_data():
 
     df_load = load_bq_data(sql)
     print(df_load.head())
+    df_load.to_csv('data.csv', index=False)
     return df_load
 
 def load_bq_data(_sql):
@@ -28,14 +33,39 @@ def load_bq_data(_sql):
     return _df
 
 def preprocess_data(df):
+    # Before cleaning
+    print(df.shape)
+
     # Clean text
     df['title'] = df['title'].str.lower().str.replace('[^\w\s]', '', regex=True).fillna('')
     df['subtitle'] = df['subtitle'].str.lower().str.replace('[^\w\s]', '', regex=True).fillna('')
+
+    # Remove rows with empty title or subtitle
+    df = df[df['title'].notna() & df['subtitle'].notna()]
+    df = df[df['title'] != '']
+    df = df[df['productType'] != '']
+
+    # Remove rows with empty productType
+    df = df[df['productType'].notna()]
+
+    # remove space in beginning and end of title and subtitle
+    df['title'] = df['title'].str.strip()
+    df['subtitle'] = df['subtitle'].str.strip()
+
+    # remove space in beginning and end of productType
+    df['productType'] = df['productType'].str.strip()
+    
     df['combined_text'] = df['title'] + ' ' + df['subtitle']
+
+    # After cleaning
+    print(df.shape)
 
     # Encode labels
     le = LabelEncoder()
     df['productType_encoded'] = le.fit_transform(df['productType'])
+    joblib.dump(le, "label_encoder.joblib")
+    with open("class_names.json", "w") as f:
+        json.dump(le.classes_.tolist(), f)
     return df
 
 def split_data(df):
@@ -63,8 +93,6 @@ def split_data(df):
     y_val.to_csv('y_val.csv', index=False)
     y_test.to_csv('y_test.csv', index=False)
 
-    print(type(X_train))
-    print(type(y_train))
     return X_train, X_val, X_test, y_train, y_val, y_test
 
 def compute_metrics(eval_pred):
@@ -94,12 +122,13 @@ def main():
 
     # Initialize tokenizer and model
     tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+    tokenizer.padding_side = 'right'
     model = DistilBertForSequenceClassification.from_pretrained('distilbert-base-uncased', num_labels=len(df_load['productType'].unique()))
 
     # Tokenize data
-    train_encodings = tokenizer(list(X_train), truncation=True, padding=True, max_length=128)
-    val_encodings = tokenizer(list(X_val), truncation=True, padding=True, max_length=128)
-    test_encodings = tokenizer(list(X_test), truncation=True, padding=True, max_length=128)
+    train_encodings = tokenizer(list(X_train), truncation=True, padding=True, max_length=140)
+    val_encodings = tokenizer(list(X_val), truncation=True, padding=True, max_length=140)
+    test_encodings = tokenizer(list(X_test), truncation=True, padding=True, max_length=140)
 
     train_dataset = ProductDataset(train_encodings, y_train.tolist())
     val_dataset = ProductDataset(val_encodings, y_val.tolist())
@@ -116,7 +145,8 @@ def main():
         logging_dir='./logs',
         logging_steps=100,
         save_steps=100,
-        save_total_limit=2
+        save_total_limit=2,
+        eval_steps=500
     )
 
     trainer = Trainer(
@@ -142,36 +172,82 @@ def main():
         f.write(str(test_results))
 
 def evaluate():
+    df_load = load_data()
+
     # load checkpoint
-    model = DistilBertForSequenceClassification.from_pretrained('results/checkpoint-76500')
+    model = DistilBertForSequenceClassification.from_pretrained("results/checkpoint-76500")
+
     tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+    tokenizer.padding_side = 'right'
+
+    print(pd.read_csv('X_test.csv').shape)
+    print(pd.read_csv('y_test.csv').shape)
 
     # load test data
     X_test = pd.read_csv('X_test.csv')
     y_test = pd.read_csv('y_test.csv')
+    y_test = y_test['productType_encoded']
+    X_test = X_test['combined_text']
 
     print(y_test.head())
+    print(X_test.head())
+
+    assert len(X_test) == len(y_test), f"Lengths do not match: {len(X_test)} != {len(y_test)}"
 
     # tokenize test data
-    test_encodings = tokenizer(list(X_test), truncation=True, padding=True, max_length=128)
+    test_encodings = tokenizer(list(X_test), truncation=True, padding=True, max_length=140)
+
     test_dataset = ProductDataset(test_encodings, y_test.tolist())
 
     # DataLoader for batching
-    test_loader = DataLoader(test_dataset, batch_size=64)
+    test_loader = DataLoader(test_dataset, batch_size=16)
 
     model.eval()
     all_preds = []
+    top3_correct = 0
+    total = 0
+
     with torch.no_grad():
-        for batch in test_loader:
+        for batch_idx, batch in enumerate(tqdm(test_loader)):
             input_ids = batch['input_ids']
             attention_mask = batch['attention_mask']
+            labels = batch['labels']
             outputs = model(input_ids, attention_mask=attention_mask)
-            preds = torch.argmax(outputs.logits, dim=1)
+            logits = outputs.logits
+
+            # Top-1 predictions
+            preds = torch.argmax(logits, dim=1)
             all_preds.extend(preds.cpu().numpy())
 
-    # calculate f1 score
+            # Top-3 predictions
+            top3 = torch.topk(logits, k=3, dim=1).indices.cpu().numpy()
+            labels_np = labels.cpu().numpy()
+            for i in range(labels_np.shape[0]):
+                if labels_np[i] in top3[i]:
+                    top3_correct += 1
+                total += 1
+
+    # Standard metrics for top-1
     f1 = f1_score(y_test, all_preds, average='weighted')
-    print(f1)
+    acc = accuracy_score(y_test, all_preds)
+    prec = precision_score(y_test, all_preds, average='weighted')
+    rec = recall_score(y_test, all_preds, average='weighted')
+
+    # Top-3 accuracy
+    top3_acc = top3_correct / total
+    print(f"F1 score: {f1}")
+    print(f"Accuracy: {acc}")
+    print(f"Precision: {prec}")
+    print(f"Recall: {rec}")
+    print(f"Top-3 Accuracy: {top3_acc}")
+
+    # Save results
+    with open('results.txt', 'w') as f:
+        f.write(f"F1 score: {f1}\n")
+        f.write(f"Accuracy: {acc}\n")
+        f.write(f"Precision: {prec}\n")
+        f.write(f"Recall: {rec}\n")
+        f.write(f"Top-3 Accuracy: {top3_acc}\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
