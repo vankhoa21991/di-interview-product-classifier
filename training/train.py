@@ -5,7 +5,7 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import f1_score
-from transformers import DistilBertTokenizer, DistilBertForSequenceClassification, Trainer, TrainingArguments
+from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments
 import torch
 from datetime import datetime
 import argparse
@@ -14,6 +14,7 @@ import joblib
 import json
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, precision_score, recall_score
+import torch.nn as nn
 
 def load_data():
     sql = """
@@ -99,7 +100,10 @@ def compute_metrics(eval_pred):
     logits, labels = eval_pred
     predictions = np.argmax(logits, axis=1)
     f1 = f1_score(labels, predictions, average='weighted')
-    return {'f1': f1}
+    acc = accuracy_score(labels, predictions)
+    prec = precision_score(labels, predictions, average='weighted')
+    rec = recall_score(labels, predictions, average='weighted')
+    return {'f1': f1, 'acc': acc, 'prec': prec, 'rec': rec}
 
 # Create dataset class
 class ProductDataset(torch.utils.data.Dataset):
@@ -112,7 +116,7 @@ class ProductDataset(torch.utils.data.Dataset):
         return item
     def __len__(self):
         return len(self.labels)
-        
+
 def main():
     df_load = load_data()
 
@@ -121,9 +125,9 @@ def main():
     X_train, X_val, X_test, y_train, y_val, y_test = split_data(df_load)
 
     # Initialize tokenizer and model
-    tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
     tokenizer.padding_side = 'right'
-    model = DistilBertForSequenceClassification.from_pretrained('distilbert-base-uncased', num_labels=len(df_load['productType'].unique()))
+    model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=len(df_load['productType'].unique()))
 
     # Tokenize data
     train_encodings = tokenizer(list(X_train), truncation=True, padding=True, max_length=140)
@@ -137,16 +141,17 @@ def main():
     # Initialize Trainer
     training_args = TrainingArguments(
         output_dir='./results',
-        num_train_epochs=300,
+        num_train_epochs=50,
         per_device_train_batch_size=16,
-        per_device_eval_batch_size=64,
+        per_device_eval_batch_size=16,
         warmup_steps=500,
         weight_decay=0.01,
         logging_dir='./logs',
         logging_steps=100,
         save_steps=100,
         save_total_limit=2,
-        eval_steps=500
+        eval_steps=500,
+        eval_strategy="steps"
     )
 
     trainer = Trainer(
@@ -154,14 +159,15 @@ def main():
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        compute_metrics=compute_metrics
+        compute_metrics=compute_metrics,
     )
 
     trainer.train()
 
+    datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     # Save model
-    model.save_pretrained(f'distilbert-base-uncased-finetuned-product-detection-{datetime.now().strftime("%Y%m%d_%H%M%S")}')
-    tokenizer.save_pretrained(f'distilbert-base-uncased-finetuned-product-detection-{datetime.now().strftime("%Y%m%d_%H%M%S")}')
+    model.save_pretrained(f'bert-base-uncased-finetuned-product-detection-{datetime_str}')
+    tokenizer.save_pretrained(f'bert-base-uncased-finetuned-product-detection-{datetime_str}')
 
     # Evaluate model
     test_results = trainer.evaluate(test_dataset)
@@ -175,9 +181,9 @@ def evaluate():
     df_load = load_data()
 
     # load checkpoint
-    model = DistilBertForSequenceClassification.from_pretrained("results/checkpoint-76500")
+    model = BertForSequenceClassification.from_pretrained("/home/vankhoa@median.cad/code/github/di-interview-product-classifier/training/bert-base-uncased-finetuned-product-detection-20250509_022000")
 
-    tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+    tokenizer = BertTokenizer.from_pretrained('/home/vankhoa@median.cad/code/github/di-interview-product-classifier/training/bert-base-uncased-finetuned-product-detection-20250509_022000')
     tokenizer.padding_side = 'right'
 
     print(pd.read_csv('X_test.csv').shape)

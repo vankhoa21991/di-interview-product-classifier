@@ -17,3 +17,4 @@ credentials.json
 venv
 *.pyc
 *.joblib
+bert-base-uncased-finetuned-product-detection-20250510_144852

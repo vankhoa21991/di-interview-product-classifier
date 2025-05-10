@@ -1,17 +1,17 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from transformers import DistilBertTokenizer, DistilBertForSequenceClassification
+from transformers import BertTokenizer, BertForSequenceClassification
 import torch
 import re
 import json
 
 # Set your model directory here
-MODEL_DIR = "../training/results/checkpoint-76500"  # <-- CHANGE THIS TO YOUR ACTUAL MODEL DIR
+MODEL_DIR = "/home/vankhoa@median.cad/code/github/di-interview-product-classifier/training/bert-base-uncased-finetuned-product-detection-20250510_144852"  # <-- CHANGE THIS TO YOUR ACTUAL MODEL DIR
 CLASS_NAMES_PATH = "../training/class_names.json"  # <-- set your class names path
 
 # Load model and tokenizer
-model = DistilBertForSequenceClassification.from_pretrained(MODEL_DIR)
-tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+model = BertForSequenceClassification.from_pretrained(MODEL_DIR)
+tokenizer = BertTokenizer.from_pretrained(MODEL_DIR)
 model.eval()
 
 # Load class names
@@ -30,6 +30,8 @@ def preprocess_text(title, subtitle):
     subtitle = subtitle.lower()
     title = re.sub(r"[^\w\s]", "", title)
     subtitle = re.sub(r"[^\w\s]", "", subtitle)
+    title = title.strip()
+    subtitle = subtitle.strip()
     return title + " " + subtitle
 
 @app.post("/classify")
